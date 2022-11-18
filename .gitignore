@@ -8,7 +8,7 @@ __pycache__/*
 */wandb
 */*.npy
 */*/*.npy
-*/.md
+*/*.md
 
 .DS_Store
 *.pyc
@@ -17,6 +17,5 @@ __pycache__/*
 */*/*/*.pyc
 */*/*/*.*.pyc
 log.txt
-*.txt
 models
 
