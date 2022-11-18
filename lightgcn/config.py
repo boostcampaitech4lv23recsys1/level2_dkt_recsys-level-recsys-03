@@ -11,7 +11,7 @@ class CFG:
     loader_verbose = True
 
     # dump
-    output_dir = "./output/"
+    output_dir = "/opt/ml/output/"
     pred_file = "submission.csv"
 
     # build

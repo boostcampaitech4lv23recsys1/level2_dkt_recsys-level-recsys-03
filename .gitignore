@@ -9,6 +9,8 @@ __pycache__/*
 */*.npy
 */*/*.npy
 */*.md
+*/*.log
+*/weight
 
 .DS_Store
 *.pyc
