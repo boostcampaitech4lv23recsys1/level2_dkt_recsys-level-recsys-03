@@ -39,6 +39,12 @@ def main():
 
     logger.info("[3/4] Inference - Start")
     pred = inference(model, test_data, logger=logger.getChild("infer"))
+    pred -= 0.5
+    # pred *= 10000
+    ## sigmoid 추가
+    preds_sig = torch.nn.Sigmoid()
+    pred = preds_sig(pred)
+    
     logger.info("[3/4] Inference - Done")
 
     logger.info("[4/4] Result Dump - Start")

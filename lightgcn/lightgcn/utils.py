@@ -23,9 +23,13 @@ def setSeeds(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    ### 아래 두 줄 추가
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    ###
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-
+    print('setSeeds')
 
 def get_logger(logger_conf):
     import logging
