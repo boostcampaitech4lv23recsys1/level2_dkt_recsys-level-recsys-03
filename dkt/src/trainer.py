@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import os
 
 import torch
@@ -14,7 +15,6 @@ from .scheduler import get_scheduler
 
 def run(args, train_data, valid_data, model):
     train_loader, valid_loader = get_loaders(args, train_data, valid_data)
-
     # only when using warmup scheduler
     args.total_steps = int(math.ceil(len(train_loader.dataset) / args.batch_size)) * (
         args.n_epochs
@@ -36,7 +36,7 @@ def run(args, train_data, valid_data, model):
         )
 
         ### VALID
-        auc, acc = validate(valid_loader, model, args)
+        auc, acc, total_preds = validate(valid_loader, model, args)
 
         ### TODO: model save or early stopping
         wandb.log(
@@ -52,6 +52,7 @@ def run(args, train_data, valid_data, model):
         if auc > best_auc:
             best_auc = auc
             # torch.nn.DataParallel로 감싸진 경우 원래의 model을 가져옵니다.
+            print(f'{epoch+1}모델 저장')
             model_to_save = model.module if hasattr(model, "module") else model
             save_checkpoint(
                 {
@@ -82,11 +83,12 @@ def train(train_loader, model, optimizer, scheduler, args):
     total_targets = []
     losses = []
     for step, batch in enumerate(train_loader):
-        input = list(map(lambda t: t.to(args.device), process_batch(batch)))
+        input = list(map(lambda t: t.to(args.device), process_batch(args,batch)))
         preds = model(input)
-        targets = input[3]  # correct
+        targets = input[-3]  # correct
 
         loss = compute_loss(preds, targets)
+
         update_params(loss, model, optimizer, scheduler, args)
 
         if step % args.log_steps == 0:
@@ -116,10 +118,10 @@ def validate(valid_loader, model, args):
     total_preds = []
     total_targets = []
     for step, batch in enumerate(valid_loader):
-        input = list(map(lambda t: t.to(args.device), process_batch(batch)))
+        input = list(map(lambda t: t.to(args.device), process_batch(args,batch)))
 
         preds = model(input)
-        targets = input[3]  # correct
+        targets = input[-3]  # correct
 
         # predictions
         preds = preds[:, -1]
@@ -127,7 +129,8 @@ def validate(valid_loader, model, args):
 
         total_preds.append(preds.detach())
         total_targets.append(targets.detach())
-
+        
+    output = torch.nn.Sigmoid()(torch.concat(total_preds)).cpu().numpy()
     total_preds = torch.concat(total_preds).cpu().numpy()
     total_targets = torch.concat(total_targets).cpu().numpy()
 
@@ -136,7 +139,7 @@ def validate(valid_loader, model, args):
 
     print(f"VALID AUC : {auc} ACC : {acc}\n")
 
-    return auc, acc
+    return auc, acc, output
 
 
 def inference(args, test_data, model):
@@ -147,22 +150,17 @@ def inference(args, test_data, model):
     total_preds = []
 
     for step, batch in enumerate(test_loader):
-        input = list(map(lambda t: t.to(args.device), process_batch(batch)))
+        input = list(map(lambda t: t.to(args.device), process_batch(args,batch)))
 
         preds = model(input)
 
-        # predictions 시작
+        # predictions
         preds = preds[:, -1]
-
-        ## sigmoid 추가
-        preds_sig = torch.nn.Sigmoid()
-        preds = preds_sig(preds)
-        
+        preds = torch.nn.Sigmoid()(preds)
         preds = preds.cpu().detach().numpy()
         total_preds += list(preds)
-        # predictions 끝 
 
-    write_path = os.path.join(args.output_dir, "submission.csv")
+    write_path = os.path.join(args.output_dir, "submission_bert+mlp_0.83.csv")
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     with open(write_path, "w", encoding="utf8") as w:
@@ -184,29 +182,46 @@ def get_model(args):
 
     return model
 
-
 # 배치 전처리
-def process_batch(batch):
-
-    test, question, tag, correct, mask = batch
-
+def process_batch(args,batch):
+    # 배치는 튜플
+    # test, question, tag, correct, mask = batch
     # change to float
-    mask = mask.float()
-    correct = correct.float()
-
+    
+    mask = batch[-1].float()
+    correct = batch[-2].float()
+    batch = list(batch[:-2])
     # interaction을 임시적으로 correct를 한칸 우측으로 이동한 것으로 사용
     interaction = correct + 1  # 패딩을 위해 correct값에 1을 더해준다.
     interaction = interaction.roll(shifts=1, dims=1)
     interaction_mask = mask.roll(shifts=1, dims=1)
     interaction_mask[:, 0] = 0
     interaction = (interaction * interaction_mask).to(torch.int64)
-
+    
+    ## cate
+    for i in range(len(batch[:args.cate_size])):
+        batch[i] =  ((batch[i] + 1) * mask).to(torch.int64)
+    ## cont
+    for i in range(args.cate_size,len(batch)):
+        batch[i] =  ((batch[i] + 1) * mask).to(torch.float)
+        
     #  test_id, question_id, tag
-    test = ((test + 1) * mask).int()
-    question = ((question + 1) * mask).int()
-    tag = ((tag + 1) * mask).int()
+    # test = ((test + 1) * mask).to(torch.int64)
+    # question = ((question + 1) * mask).to(torch.int64)
+    # tag = ((tag + 1) * mask).to(torch.int64)
+    
+    # test = test.to(torch.int64)
+    # question = question.to(torch.int64)
+    # tag = tag.to(torch.int64)
 
-    return (test, question, tag, correct, mask, interaction)
+    batch.append(correct)
+    batch.append(mask)
+    batch.append(interaction)
+    
+    ## interaction이 범주형 데이터라서 1을 더해준다
+    # args.cate_size += 1
+    
+    return tuple(batch)
 
 
 # loss계산하고 parameter update!
