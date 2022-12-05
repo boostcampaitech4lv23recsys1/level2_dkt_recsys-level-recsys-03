@@ -77,18 +77,34 @@ class LSTMATTN(nn.Module):
         self.n_layers = self.args.n_layers
         self.n_heads = self.args.n_heads
         self.drop_out = self.args.drop_out
+        ## interaction이 범주형 데이터라서 1을 더해준다
+        self.args.cate_size = self.args.cate_size + 1
+        layers = list()
 
         # Embedding
         # interaction은 현재 correct로 구성되어있다. correct(1, 2) + padding(0)
-        self.embedding_interaction = nn.Embedding(3, self.hidden_dim // 3)
-        self.embedding_test = nn.Embedding(self.args.n_test + 1, self.hidden_dim // 3)
+        self.embedding_interaction = nn.Embedding(3, self.hidden_dim // self.args.cate_size)
+        self.embedding_test = nn.Embedding(self.args.n_test + 1, self.hidden_dim // self.args.cate_size)
         self.embedding_question = nn.Embedding(
-            self.args.n_questions + 1, self.hidden_dim // 3
+            self.args.n_questions + 1, self.hidden_dim // self.args.cate_size
         )
-        self.embedding_tag = nn.Embedding(self.args.n_tag + 1, self.hidden_dim // 3)
+        self.embedding_tag = nn.Embedding(self.args.n_tag + 1, self.hidden_dim // self.args.cate_size)
 
         # embedding combination projection
-        self.comb_proj = nn.Linear((self.hidden_dim // 3) * 4, self.hidden_dim)
+        self.cate_proj = nn.Linear((self.hidden_dim // self.args.cate_size) * self.args.cate_size, self.hidden_dim//2)
+        self.cont_proj = nn.Sequential(                
+            nn.Linear(self.args.col_size, self.hidden_dim//2 ),
+            nn.LayerNorm(self.hidden_dim//2 ),
+        )
+        input_dim = self.hidden_dim
+        for embed_dim in self.args.embed_dims:
+            layers.append(torch.nn.Linear(input_dim, embed_dim))
+            layers.append(torch.nn.BatchNorm1d(self.args.max_seq_len))
+            layers.append(torch.nn.LeakyReLU())
+            layers.append(torch.nn.Dropout(p=0.1))
+            input_dim = embed_dim
+        layers.append(torch.nn.Linear(input_dim, 1))
+        self.mlp = torch.nn.Sequential(*layers)
 
         self.lstm = nn.LSTM(
             self.hidden_dim, self.hidden_dim, self.n_layers, batch_first=True
@@ -111,8 +127,7 @@ class LSTMATTN(nn.Module):
         self.activation = nn.Sigmoid()
 
     def forward(self, input):
-
-        test, question, tag, _, mask, interaction = input
+        tag, question, test, mask, interaction = input[0],input[1],input[2],input[-2],input[-1]
 
         batch_size = interaction.size(0)
 
@@ -131,21 +146,29 @@ class LSTMATTN(nn.Module):
             ],
             2,
         )
+        
+        X = torch.cat([i.unsqueeze(-1) for i in input[3:-3]],2)
+        cate_emb = self.cate_proj(embed) 
+        cont_emb = self.cont_proj(X)
+        seq_emb = torch.cat([cate_emb, cont_emb], 2)
+        
+        out= seq_emb
 
-        X = self.comb_proj(embed)
-
-        out, _ = self.lstm(X)
         out = out.contiguous().view(batch_size, -1, self.hidden_dim)
 
         extended_attention_mask = mask.unsqueeze(1).unsqueeze(2)
         extended_attention_mask = extended_attention_mask.to(dtype=torch.float32)
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
         head_mask = [None] * self.n_layers
-
-        encoded_layers = self.attn(out, extended_attention_mask, head_mask=head_mask)
+        encoded_layers = self.attn(out)
+        # shape [64,5,50]
         sequence_output = encoded_layers[-1]
-
-        out = self.fc(sequence_output).view(batch_size, -1)
+        
+        # mlp_output = self.mlp(sequence_output) 
+   
+        out = self.fc(sequence_output.squeeze(2)).view(batch_size, -1)
+        # out = mlp_output.squeeze(2)
+        # out = self.fc(out).view(batch_size, -1)
         return out
 
 
